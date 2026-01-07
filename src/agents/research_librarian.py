@@ -9,9 +9,10 @@ from typing import Callable
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from ..state import TeachingState
+from .utils import execute_agent_with_tools
 
 
 RESEARCH_LIBRARIAN_SYSTEM_PROMPT = """You are the Research Librarian - a Learning Resource Specialist for the AI Teaching Agent Team.
@@ -43,14 +44,18 @@ Your role is to curate high-quality, current learning resources that support the
 - Include direct URLs when available
 - Rate resources (Beginner/Intermediate/Advanced)
 - Note if resources are free or paid
-- **IMPORTANT**: Create a Google Doc with your curated list and include the link"""
+
+## IMPORTANT Instructions:
+- Use the web_search tool to find 3-5 high-quality resources
+- After searching, compile your findings into a comprehensive resource guide
+- Do NOT just make tool calls - provide a final written response with the curated resources"""
 
 
 RESEARCH_LIBRARIAN_HUMAN_PROMPT = """Search for and curate high-quality learning resources for: {topic}
 
-Use the web search tool to find current and relevant materials. Then organize them into a comprehensive resource guide that aligns with the learning roadmap.
+Use the web search tool to find current and relevant materials. After gathering information, organize them into a comprehensive resource guide that aligns with the learning roadmap.
 
-Remember to create a Google Doc and include the link in your response."""
+Provide your complete curated resource list in your response."""
 
 
 def create_research_librarian_node(
@@ -75,8 +80,6 @@ def create_research_librarian_node(
         ("human", RESEARCH_LIBRARIAN_HUMAN_PROMPT),
     ])
     
-    llm_with_tools = llm.bind_tools(tools)
-    
     def research_librarian_node(state: TeachingState) -> dict:
         """Execute the Research Librarian agent."""
         topic = state["topic"]
@@ -90,14 +93,10 @@ def create_research_librarian_node(
             roadmap=roadmap_summary
         )
         
-        response = llm_with_tools.invoke(messages)
+        # Execute with proper tool handling
+        resources = execute_agent_with_tools(llm, tools, messages, max_iterations=5)
         
-        if hasattr(response, 'content') and response.content:
-            resources = response.content
-        else:
-            resources = str(response)
-        
-        # Extract Google Doc link
+        # Extract Google Doc link if present
         doc_link = _extract_google_doc_link(resources)
         google_doc_links = state.get("google_doc_links", {}).copy()
         if doc_link:

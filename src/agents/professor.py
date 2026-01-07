@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.messages import AIMessage
 
 from ..state import TeachingState
+from .utils import execute_agent_with_tools
 
 
 PROFESSOR_SYSTEM_PROMPT = """You are the Professor - a Research and Knowledge Specialist for the AI Teaching Agent Team.
@@ -30,11 +31,12 @@ Your role is to create a comprehensive knowledge base that serves as the foundat
 - Use clear headings and subheadings for organization
 - Include examples where helpful
 - Make content accessible to beginners while still being comprehensive
-- **IMPORTANT**: Create a Google Doc with your knowledge base content
 
 ## Current Topic: {topic}
 
-Create a comprehensive knowledge base that anyone starting out can read and gain maximum value from."""
+Create a comprehensive knowledge base that anyone starting out can read and gain maximum value from.
+
+IMPORTANT: Provide your complete knowledge base directly in your response. Do not just make tool calls - write out the full educational content."""
 
 
 PROFESSOR_HUMAN_PROMPT = """Please create a comprehensive knowledge base for the topic: {topic}
@@ -44,7 +46,8 @@ Remember to:
 2. Include key terminology and definitions
 3. Cover core principles and practical applications
 4. Format for readability and understanding
-5. Create a Google Doc with your findings and include the link in your response"""
+
+Provide your complete knowledge base in your response."""
 
 
 def create_professor_node(
@@ -55,11 +58,11 @@ def create_professor_node(
     Create the Professor agent node for the LangGraph.
     
     The Professor researches the topic and creates a comprehensive
-    knowledge base document, saving it to Google Docs.
+    knowledge base document.
     
     Args:
         llm: The language model to use for generation
-        tools: List of tools (should include Google Docs tools)
+        tools: List of tools (may include Google Docs tools)
         
     Returns:
         A node function that takes TeachingState and returns state updates
@@ -69,9 +72,6 @@ def create_professor_node(
         ("human", PROFESSOR_HUMAN_PROMPT),
     ])
     
-    # Bind tools to LLM for function calling
-    llm_with_tools = llm.bind_tools(tools)
-    
     def professor_node(state: TeachingState) -> dict:
         """Execute the Professor agent."""
         topic = state["topic"]
@@ -79,14 +79,8 @@ def create_professor_node(
         # Format the prompt
         messages = prompt.format_messages(topic=topic)
         
-        # Invoke LLM with tools
-        response = llm_with_tools.invoke(messages)
-        
-        # Extract content - handle both direct response and tool calls
-        if hasattr(response, 'content') and response.content:
-            knowledge_base = response.content
-        else:
-            knowledge_base = str(response)
+        # Execute with proper tool handling
+        knowledge_base = execute_agent_with_tools(llm, tools, messages, max_iterations=3)
         
         # Extract Google Doc link if present
         doc_link = _extract_google_doc_link(knowledge_base)

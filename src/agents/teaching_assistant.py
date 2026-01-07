@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.messages import AIMessage
 
 from ..state import TeachingState
+from .utils import execute_agent_with_tools
 
 
 TEACHING_ASSISTANT_SYSTEM_PROMPT = """You are the Teaching Assistant - an Exercise Creator for the AI Teaching Agent Team.
@@ -43,16 +44,18 @@ Your role is to create comprehensive practice materials that help learners apply
 - Include clear instructions for each exercise
 - Provide complete solutions with explanations
 - Estimate time needed for each exercise
-- **IMPORTANT**: Create a Google Doc with your practice materials and include the link"""
+
+## IMPORTANT Instructions:
+- You may use web_search to find example problems if helpful
+- Focus on creating original, practical exercises
+- Provide your complete practice materials in your final response"""
 
 
 TEACHING_ASSISTANT_HUMAN_PROMPT = """Create comprehensive practice materials for: {topic}
 
 Design exercises, quizzes, and projects that align with the learning roadmap and help reinforce the knowledge base concepts.
 
-Use web search if helpful to find example problems and real-world application scenarios.
-
-Remember to create a Google Doc and include the link in your response."""
+Provide your complete practice materials including exercises and solutions in your response."""
 
 
 def create_teaching_assistant_node(
@@ -77,8 +80,6 @@ def create_teaching_assistant_node(
         ("human", TEACHING_ASSISTANT_HUMAN_PROMPT),
     ])
     
-    llm_with_tools = llm.bind_tools(tools)
-    
     def teaching_assistant_node(state: TeachingState) -> dict:
         """Execute the Teaching Assistant agent."""
         topic = state["topic"]
@@ -95,14 +96,10 @@ def create_teaching_assistant_node(
             roadmap=roadmap_summary
         )
         
-        response = llm_with_tools.invoke(messages)
+        # Execute with proper tool handling
+        practice_materials = execute_agent_with_tools(llm, tools, messages, max_iterations=5)
         
-        if hasattr(response, 'content') and response.content:
-            practice_materials = response.content
-        else:
-            practice_materials = str(response)
-        
-        # Extract Google Doc link
+        # Extract Google Doc link if present
         doc_link = _extract_google_doc_link(practice_materials)
         google_doc_links = state.get("google_doc_links", {}).copy()
         if doc_link:

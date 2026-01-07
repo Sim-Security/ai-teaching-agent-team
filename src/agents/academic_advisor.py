@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.messages import AIMessage
 
 from ..state import TeachingState
+from .utils import execute_agent_with_tools
 
 
 ACADEMIC_ADVISOR_SYSTEM_PROMPT = """You are the Academic Advisor - a Learning Path Designer for the AI Teaching Agent Team.
@@ -36,9 +37,10 @@ Knowledge Base Summary:
 - Include estimated hours/days for each section
 - Mark prerequisite relationships between topics
 - Suggest checkpoint assessments along the way
-- **IMPORTANT**: Create a Google Doc with your roadmap and include the link
 
-## Current Topic: {topic}"""
+## Current Topic: {topic}
+
+IMPORTANT: Provide your complete learning roadmap directly in your response."""
 
 
 ACADEMIC_ADVISOR_HUMAN_PROMPT = """Based on the knowledge base provided, create a comprehensive learning roadmap for: {topic}
@@ -50,7 +52,7 @@ Structure your roadmap with:
 4. Prerequisites clearly marked
 5. Milestone checkpoints
 
-Remember to create a Google Doc and include the link in your response."""
+Provide your complete roadmap in your response."""
 
 
 def create_academic_advisor_node(
@@ -65,7 +67,7 @@ def create_academic_advisor_node(
     
     Args:
         llm: The language model to use for generation
-        tools: List of tools (should include Google Docs tools)
+        tools: List of tools (may include Google Docs tools)
         
     Returns:
         A node function that takes TeachingState and returns state updates
@@ -74,8 +76,6 @@ def create_academic_advisor_node(
         ("system", ACADEMIC_ADVISOR_SYSTEM_PROMPT),
         ("human", ACADEMIC_ADVISOR_HUMAN_PROMPT),
     ])
-    
-    llm_with_tools = llm.bind_tools(tools)
     
     def academic_advisor_node(state: TeachingState) -> dict:
         """Execute the Academic Advisor agent."""
@@ -90,12 +90,8 @@ def create_academic_advisor_node(
             knowledge_base=kb_summary
         )
         
-        response = llm_with_tools.invoke(messages)
-        
-        if hasattr(response, 'content') and response.content:
-            roadmap = response.content
-        else:
-            roadmap = str(response)
+        # Execute with proper tool handling
+        roadmap = execute_agent_with_tools(llm, tools, messages, max_iterations=3)
         
         # Extract Google Doc link
         doc_link = _extract_google_doc_link(roadmap)
