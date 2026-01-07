@@ -9,10 +9,10 @@ from typing import Callable
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 
 from ..state import TeachingState
-from .utils import execute_agent_with_tools
+from .utils import execute_agent_with_tools, save_content_to_google_docs
 
 
 RESEARCH_LIBRARIAN_SYSTEM_PROMPT = """You are the Research Librarian - a Learning Resource Specialist for the AI Teaching Agent Team.
@@ -37,25 +37,20 @@ Your role is to curate high-quality, current learning resources that support the
 - 💻 GitHub Repositories & Code Examples
 - 📖 Books & eBooks
 - 🎓 Online Courses (free and paid)
-- 🔧 Tools & Utilities
-
-## Output Requirements:
-- Organize resources by roadmap phase or category
-- Include direct URLs when available
-- Rate resources (Beginner/Intermediate/Advanced)
-- Note if resources are free or paid
 
 ## IMPORTANT Instructions:
-- Use the web_search tool to find 3-5 high-quality resources
-- After searching, compile your findings into a comprehensive resource guide
-- Do NOT just make tool calls - provide a final written response with the curated resources"""
+- Use the web_search tool to find resources
+- After gathering information, compile a comprehensive resource guide
+- Provide your final compiled list in your response"""
 
 
 RESEARCH_LIBRARIAN_HUMAN_PROMPT = """Search for and curate high-quality learning resources for: {topic}
 
-Use the web search tool to find current and relevant materials. After gathering information, organize them into a comprehensive resource guide that aligns with the learning roadmap.
+Use the web search tool to find current resources. After searching, compile them into a comprehensive guide organized by category.
 
-Provide your complete curated resource list in your response."""
+Include: official docs, tutorials, YouTube/courses, GitHub repos, and books.
+
+Provide your complete curated resource list."""
 
 
 def create_research_librarian_node(
@@ -65,42 +60,47 @@ def create_research_librarian_node(
     """
     Create the Research Librarian agent node for the LangGraph.
     
-    The Research Librarian searches for and curates learning resources,
-    using web search to find current materials.
-    
-    Args:
-        llm: The language model to use for generation
-        tools: List of tools (should include search and Google Docs tools)
-        
-    Returns:
-        A node function that takes TeachingState and returns state updates
+    Uses web search to find resources, then compiles and saves to Google Docs.
     """
     prompt = ChatPromptTemplate.from_messages([
         ("system", RESEARCH_LIBRARIAN_SYSTEM_PROMPT),
         ("human", RESEARCH_LIBRARIAN_HUMAN_PROMPT),
     ])
     
+    # Separate search tools from Google Docs tools
+    def get_search_tools(all_tools):
+        return [t for t in all_tools if 'search' in t.name.lower()]
+    
+    def get_docs_tools(all_tools):
+        return [t for t in all_tools if 'doc' in t.name.lower()]
+    
     def research_librarian_node(state: TeachingState) -> dict:
         """Execute the Research Librarian agent."""
         topic = state["topic"]
         roadmap = state.get("roadmap", "Not yet available")
         
-        # Truncate roadmap if too long
-        roadmap_summary = roadmap[:2000] + "..." if len(roadmap) > 2000 else roadmap
+        roadmap_summary = roadmap[:3000] + "..." if len(roadmap) > 3000 else roadmap
         
         messages = prompt.format_messages(
             topic=topic,
             roadmap=roadmap_summary
         )
         
-        # Execute with proper tool handling
-        resources = execute_agent_with_tools(llm, tools, messages, max_iterations=5)
+        # Use ONLY search tools for resource gathering
+        search_tools = get_search_tools(tools)
+        resources = execute_agent_with_tools(llm, search_tools, messages, max_iterations=5)
         
-        # Extract Google Doc link if present
-        doc_link = _extract_google_doc_link(resources)
+        # Save to Google Docs
         google_doc_links = state.get("google_doc_links", {}).copy()
+        docs_tools = get_docs_tools(tools)
+        doc_link = save_content_to_google_docs(
+            docs_tools,
+            f"Learning Resources: {topic}",
+            resources
+        )
         if doc_link:
             google_doc_links["research_librarian"] = doc_link
+            resources += f"\n\n---\n📄 **Google Doc**: [{doc_link}]({doc_link})"
         
         completed = state.get("completed_agents", []).copy()
         completed.append("research_librarian")
@@ -114,11 +114,3 @@ def create_research_librarian_node(
         }
     
     return research_librarian_node
-
-
-def _extract_google_doc_link(content: str) -> str | None:
-    """Extract Google Doc URL from response content."""
-    import re
-    pattern = r'https://docs\.google\.com/document/d/[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_/-]*)?'
-    match = re.search(pattern, content)
-    return match.group(0) if match else None

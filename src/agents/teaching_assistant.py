@@ -12,7 +12,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.messages import AIMessage
 
 from ..state import TeachingState
-from .utils import execute_agent_with_tools
+from .utils import execute_agent_with_tools, save_content_to_google_docs
 
 
 TEACHING_ASSISTANT_SYSTEM_PROMPT = """You are the Teaching Assistant - an Exercise Creator for the AI Teaching Agent Team.
@@ -45,17 +45,21 @@ Your role is to create comprehensive practice materials that help learners apply
 - Provide complete solutions with explanations
 - Estimate time needed for each exercise
 
-## IMPORTANT Instructions:
-- You may use web_search to find example problems if helpful
+## IMPORTANT:
 - Focus on creating original, practical exercises
-- Provide your complete practice materials in your final response"""
+- Adapt quantity and complexity to the topic
+- Write your complete practice materials in your response"""
 
 
 TEACHING_ASSISTANT_HUMAN_PROMPT = """Create comprehensive practice materials for: {topic}
 
-Design exercises, quizzes, and projects that align with the learning roadmap and help reinforce the knowledge base concepts.
+Design exercises, quizzes, and projects that:
+1. Align with the learning roadmap phases
+2. Reinforce knowledge base concepts
+3. Progress from beginner to advanced
+4. Include solutions and explanations
 
-Provide your complete practice materials including exercises and solutions in your response."""
+Provide your complete practice materials with exercises and solutions."""
 
 
 def create_teaching_assistant_node(
@@ -65,20 +69,18 @@ def create_teaching_assistant_node(
     """
     Create the Teaching Assistant agent node for the LangGraph.
     
-    The Teaching Assistant creates practice materials aligned
-    with the knowledge base and roadmap from previous agents.
-    
-    Args:
-        llm: The language model to use for generation
-        tools: List of tools (should include search and Google Docs tools)
-        
-    Returns:
-        A node function that takes TeachingState and returns state updates
+    Creates practice materials, optionally using search for examples.
     """
     prompt = ChatPromptTemplate.from_messages([
         ("system", TEACHING_ASSISTANT_SYSTEM_PROMPT),
         ("human", TEACHING_ASSISTANT_HUMAN_PROMPT),
     ])
+    
+    def get_search_tools(all_tools):
+        return [t for t in all_tools if 'search' in t.name.lower()]
+    
+    def get_docs_tools(all_tools):
+        return [t for t in all_tools if 'doc' in t.name.lower()]
     
     def teaching_assistant_node(state: TeachingState) -> dict:
         """Execute the Teaching Assistant agent."""
@@ -86,9 +88,8 @@ def create_teaching_assistant_node(
         knowledge_base = state.get("knowledge_base", "Not yet available")
         roadmap = state.get("roadmap", "Not yet available")
         
-        # Truncate for context limits
-        kb_summary = knowledge_base[:2000] + "..." if len(knowledge_base) > 2000 else knowledge_base
-        roadmap_summary = roadmap[:2000] + "..." if len(roadmap) > 2000 else roadmap
+        kb_summary = knowledge_base[:3000] + "..." if len(knowledge_base) > 3000 else knowledge_base
+        roadmap_summary = roadmap[:3000] + "..." if len(roadmap) > 3000 else roadmap
         
         messages = prompt.format_messages(
             topic=topic,
@@ -96,14 +97,26 @@ def create_teaching_assistant_node(
             roadmap=roadmap_summary
         )
         
-        # Execute with proper tool handling
-        practice_materials = execute_agent_with_tools(llm, tools, messages, max_iterations=5)
+        # Use search tools if available for finding example problems
+        search_tools = get_search_tools(tools)
+        if search_tools:
+            practice_materials = execute_agent_with_tools(llm, search_tools, messages, max_iterations=3)
+        else:
+            # No search tools - generate directly
+            response = llm.invoke(messages)
+            practice_materials = response.content if hasattr(response, 'content') else str(response)
         
-        # Extract Google Doc link if present
-        doc_link = _extract_google_doc_link(practice_materials)
+        # Save to Google Docs
         google_doc_links = state.get("google_doc_links", {}).copy()
+        docs_tools = get_docs_tools(tools)
+        doc_link = save_content_to_google_docs(
+            docs_tools,
+            f"Practice Materials: {topic}",
+            practice_materials
+        )
         if doc_link:
             google_doc_links["teaching_assistant"] = doc_link
+            practice_materials += f"\n\n---\n📄 **Google Doc**: [{doc_link}]({doc_link})"
         
         completed = state.get("completed_agents", []).copy()
         completed.append("teaching_assistant")
@@ -112,16 +125,8 @@ def create_teaching_assistant_node(
             "practice_materials": practice_materials,
             "google_doc_links": google_doc_links,
             "messages": [AIMessage(content=practice_materials, name="Teaching Assistant")],
-            "next_agent": "FINISH",  # Last agent - signal completion
+            "next_agent": "FINISH",
             "completed_agents": completed,
         }
     
     return teaching_assistant_node
-
-
-def _extract_google_doc_link(content: str) -> str | None:
-    """Extract Google Doc URL from response content."""
-    import re
-    pattern = r'https://docs\.google\.com/document/d/[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_/-]*)?'
-    match = re.search(pattern, content)
-    return match.group(0) if match else None

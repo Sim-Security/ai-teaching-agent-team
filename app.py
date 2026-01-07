@@ -27,6 +27,10 @@ if 'openrouter_api_key' not in st.session_state:
     st.session_state['openrouter_api_key'] = os.getenv('OPENROUTER_API_KEY', '')
 if 'composio_api_key' not in st.session_state:
     st.session_state['composio_api_key'] = os.getenv('COMPOSIO_API_KEY', '')
+if 'composio_user_id' not in st.session_state:
+    st.session_state['composio_user_id'] = os.getenv('COMPOSIO_USER_ID', 'default')
+if 'composio_mcp_config_id' not in st.session_state:
+    st.session_state['composio_mcp_config_id'] = os.getenv('COMPOSIO_MCP_CONFIG_ID', '')
 if 'langsmith_api_key' not in st.session_state:
     st.session_state['langsmith_api_key'] = os.getenv('LANGSMITH_API_KEY', '')
 if 'serpapi_api_key' not in st.session_state:
@@ -184,13 +188,23 @@ if st.button("🚀 Generate Learning Package", type="primary", use_container_wid
         
         # Initialize tools
         with st.spinner("🔧 Initializing tools..."):
+            # Use MCP if config ID provided (recommended for reliable execution)
+            mcp_config_id = st.session_state.get('composio_mcp_config_id', '')
             google_docs_tools = get_google_docs_tools(
-                st.session_state['composio_api_key']
+                st.session_state['composio_api_key'],
+                user_id=st.session_state['composio_user_id'],
+                mcp_config_id=mcp_config_id if mcp_config_id else None
             )
             search_tool = get_search_tool(
                 use_production=st.session_state['use_production_search'],
                 serpapi_key=st.session_state['serpapi_api_key']
             )
+        
+        # Debug: Show loaded tools
+        if google_docs_tools:
+            st.success(f"✅ Loaded {len(google_docs_tools)} Google Docs tool(s): {[t.name for t in google_docs_tools]}")
+        else:
+            st.warning("⚠️ No Google Docs tools loaded. Documents won't be created.")
         
         # Create the graph
         with st.spinner("🔨 Building agent graph..."):
@@ -239,10 +253,20 @@ if st.button("🚀 Generate Learning Package", type="primary", use_container_wid
                     agent_status[node_name] = "✅ Complete"
                     update_progress()
                     
-                    # Store output
+                    # Store output - properly merge google_doc_links
                     if final_state is None:
                         final_state = dict(initial_state)
+                    
+                    # Merge google_doc_links instead of overwriting
+                    if "google_doc_links" in node_output and node_output["google_doc_links"]:
+                        current_links = final_state.get("google_doc_links", {})
+                        current_links.update(node_output["google_doc_links"])
+                        node_output["google_doc_links"] = current_links
+                    
                     final_state.update(node_output)
+        
+        # Debug: Print final google_doc_links
+        print(f"[DEBUG] Final google_doc_links: {final_state.get('google_doc_links', {}) if final_state else 'None'}")
         
         # Display results
         st.markdown("---")

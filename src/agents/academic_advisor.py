@@ -12,7 +12,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.messages import AIMessage
 
 from ..state import TeachingState
-from .utils import execute_agent_with_tools
+from .utils import save_content_to_google_docs
 
 
 ACADEMIC_ADVISOR_SYSTEM_PROMPT = """You are the Academic Advisor - a Learning Path Designer for the AI Teaching Agent Team.
@@ -40,7 +40,9 @@ Knowledge Base Summary:
 
 ## Current Topic: {topic}
 
-IMPORTANT: Provide your complete learning roadmap directly in your response."""
+## IMPORTANT:
+- Adapt your length to the topic's complexity
+- Write your complete roadmap directly in your response"""
 
 
 ACADEMIC_ADVISOR_HUMAN_PROMPT = """Based on the knowledge base provided, create a comprehensive learning roadmap for: {topic}
@@ -52,7 +54,7 @@ Structure your roadmap with:
 4. Prerequisites clearly marked
 5. Milestone checkpoints
 
-Provide your complete roadmap in your response."""
+Write your complete roadmap directly in your response."""
 
 
 def create_academic_advisor_node(
@@ -61,16 +63,6 @@ def create_academic_advisor_node(
 ) -> Callable[[TeachingState], dict]:
     """
     Create the Academic Advisor agent node for the LangGraph.
-    
-    The Academic Advisor designs learning paths based on the
-    Professor's knowledge base, creating a structured roadmap.
-    
-    Args:
-        llm: The language model to use for generation
-        tools: List of tools (may include Google Docs tools)
-        
-    Returns:
-        A node function that takes TeachingState and returns state updates
     """
     prompt = ChatPromptTemplate.from_messages([
         ("system", ACADEMIC_ADVISOR_SYSTEM_PROMPT),
@@ -83,21 +75,30 @@ def create_academic_advisor_node(
         knowledge_base = state.get("knowledge_base", "Not yet available")
         
         # Truncate knowledge base if too long for context
-        kb_summary = knowledge_base[:3000] + "..." if len(knowledge_base) > 3000 else knowledge_base
+        kb_summary = knowledge_base[:4000] + "..." if len(knowledge_base) > 4000 else knowledge_base
         
+        # Generate content
         messages = prompt.format_messages(
             topic=topic,
             knowledge_base=kb_summary
         )
+        response = llm.invoke(messages)
         
-        # Execute with proper tool handling
-        roadmap = execute_agent_with_tools(llm, tools, messages, max_iterations=3)
+        if hasattr(response, 'content') and response.content:
+            roadmap = response.content
+        else:
+            roadmap = str(response)
         
-        # Extract Google Doc link
-        doc_link = _extract_google_doc_link(roadmap)
+        # Save to Google Docs
         google_doc_links = state.get("google_doc_links", {}).copy()
+        doc_link = save_content_to_google_docs(
+            tools,
+            f"Learning Roadmap: {topic}",
+            roadmap
+        )
         if doc_link:
             google_doc_links["academic_advisor"] = doc_link
+            roadmap += f"\n\n---\n📄 **Google Doc**: [{doc_link}]({doc_link})"
         
         completed = state.get("completed_agents", []).copy()
         completed.append("academic_advisor")
@@ -111,11 +112,3 @@ def create_academic_advisor_node(
         }
     
     return academic_advisor_node
-
-
-def _extract_google_doc_link(content: str) -> str | None:
-    """Extract Google Doc URL from response content."""
-    import re
-    pattern = r'https://docs\.google\.com/document/d/[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_/-]*)?'
-    match = re.search(pattern, content)
-    return match.group(0) if match else None

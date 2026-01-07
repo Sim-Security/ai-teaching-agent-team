@@ -1,11 +1,8 @@
 """
-Google Docs tool integration using Composio v3 SDK.
+Google Docs integration using Composio MCP (Model Context Protocol).
 
-This module wraps the Composio LangChain integration to provide
-Google Docs creation and update capabilities for the teaching agents.
-
-With Composio v3, OAuth authorization is handled programmatically
-rather than via the `composio add googledocs` CLI command.
+This module uses the industry-standard MCP approach for reliable tool execution.
+No fallback - MCP is the only supported method.
 """
 
 import os
@@ -13,144 +10,90 @@ from typing import Optional
 from langchain_core.tools import BaseTool
 
 
-def check_google_docs_connection(api_key: str, user_id: str = "default") -> dict:
+def get_google_docs_tools(
+    api_key: str,
+    user_id: str = "default",
+    mcp_config_id: Optional[str] = None
+) -> list[BaseTool]:
     """
-    Check if Google Docs is connected for the given user.
+    Get Google Docs tools via Composio MCP.
     
     Args:
         api_key: Composio API key
-        user_id: User identifier in your system
+        user_id: User identifier
+        mcp_config_id: MCP config ID (REQUIRED for tool access)
         
     Returns:
-        dict with 'connected' bool and 'auth_url' if authorization needed
-    """
-    os.environ["COMPOSIO_API_KEY"] = api_key
-    
-    try:
-        from composio import Composio
-        
-        composio = Composio(api_key=api_key)
-        
-        # Check for existing connections
-        accounts = composio.connected_accounts.list(user_id=user_id)
-        
-        for account in accounts:
-            if hasattr(account, 'toolkit') and 'googledocs' in account.toolkit.lower():
-                if account.status == "ACTIVE":
-                    return {"connected": True, "account_id": account.id}
-        
-        return {"connected": False, "message": "Google Docs not connected"}
-        
-    except Exception as e:
-        return {"connected": False, "error": str(e)}
-
-
-def initiate_google_docs_auth(api_key: str, user_id: str = "default") -> dict:
-    """
-    Initiate OAuth flow for Google Docs authorization.
-    
-    Args:
-        api_key: Composio API key
-        user_id: User identifier in your system
-        
-    Returns:
-        dict with 'auth_url' to redirect user for authorization
-    """
-    os.environ["COMPOSIO_API_KEY"] = api_key
-    
-    try:
-        from composio import Composio
-        
-        composio = Composio(api_key=api_key)
-        
-        # Initiate connection - this requires an auth_config_id from your dashboard
-        # For Google Docs, you need to create an auth config in the Composio dashboard first
-        connection_request = composio.connected_accounts.initiate(
-            user_id=user_id,
-            toolkit="GOOGLEDOCS",
-            redirect_url="https://platform.composio.dev/callback",
-        )
-        
-        return {
-            "auth_url": connection_request.redirect_url,
-            "connection_id": connection_request.id,
-        }
-        
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def get_google_docs_tools(api_key: str, user_id: str = "default") -> list[BaseTool]:
-    """
-    Initialize Google Docs tools using Composio LangChain integration.
-    
-    Args:
-        api_key: Composio API key for authentication
-        user_id: User identifier for connected account lookup
-        
-    Returns:
-        List of LangChain-compatible tools for Google Docs operations
+        List of LangChain-compatible tools
         
     Raises:
-        ImportError: If composio-langchain is not installed
-        Exception: If Composio initialization fails
+        ValueError: If mcp_config_id is not provided
     """
-    # Set API key in environment for Composio
+    if not mcp_config_id:
+        import warnings
+        warnings.warn(
+            "COMPOSIO_MCP_CONFIG_ID is required for Google Docs integration. "
+            "Set it in your .env file. Get it from https://platform.composio.dev/mcp-configs"
+        )
+        return []
+    
+    # Set API key in environment
     os.environ["COMPOSIO_API_KEY"] = api_key
     
+    # Apply nest_asyncio to allow nested event loops (required for Streamlit)
     try:
-        from composio import Composio
-        from composio_langchain import LangchainProvider
+        import nest_asyncio
+        nest_asyncio.apply()
     except ImportError:
-        raise ImportError(
-            "composio-langchain is required for Google Docs integration. "
-            "Install it with: pip install -U composio-langchain composio"
+        import warnings
+        warnings.warn("nest-asyncio not installed. Run: pip install nest-asyncio")
+        return []
+    
+    import asyncio
+    
+    async def get_mcp_tools():
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        
+        # Construct the Composio MCP server URL
+        # Format: https://backend.composio.dev/v3/mcp/{config_id}/mcp?user_id={user_id}
+        mcp_url = (
+            f"https://backend.composio.dev/v3/mcp/{mcp_config_id}/mcp"
+            f"?user_id={user_id}"
         )
+        
+        print(f"[MCP] Connecting to: {mcp_url}")
+        
+        client = MultiServerMCPClient({
+            "googledocs": {
+                "transport": "http",
+                "url": mcp_url,
+                "headers": {
+                    "x-api-key": api_key,
+                }
+            }
+        })
+        
+        tools = await client.get_tools()
+        print(f"[MCP] Loaded {len(tools)} tools")
+        for tool in tools:
+            print(f"[MCP]   - {tool.name}")
+        
+        return tools
     
     try:
-        # Initialize Composio with LangChain provider
-        composio = Composio(api_key=api_key, provider=LangchainProvider())
-        
-        # Get Google Docs tools for this user
-        tools = composio.tools.get(
-            user_id=user_id,
-            toolkits=["GOOGLEDOCS"],
-        )
-        
-        if not tools:
-            import warnings
-            warnings.warn(
-                "No Google Docs tools available. "
-                "Please authorize Google Docs at: https://platform.composio.dev/ "
-                "Navigate to Connections > Add Connection > Google Docs"
-            )
-        
+        # Run the async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        tools = loop.run_until_complete(get_mcp_tools())
         return tools
         
     except Exception as e:
-        # If Composio setup fails, return empty list with warning
         import warnings
+        import traceback
+        print(f"[MCP] ERROR: {e}")
+        traceback.print_exc()
         warnings.warn(
-            f"Failed to initialize Composio Google Docs tools: {e}. "
-            "Agents will continue without Google Docs integration. "
-            "Please authorize at: https://platform.composio.dev/"
+            f"Failed to connect to Composio MCP server: {e}. "
+            "Check your MCP config at https://platform.composio.dev/mcp-configs"
         )
         return []
-
-
-def get_google_docs_create_tool(api_key: str, user_id: str = "default") -> Optional[BaseTool]:
-    """
-    Get only the Google Docs create document tool.
-    
-    Args:
-        api_key: Composio API key for authentication
-        user_id: User identifier for connected account lookup
-        
-    Returns:
-        The create document tool, or None if not found
-    """
-    tools = get_google_docs_tools(api_key, user_id)
-    for tool in tools:
-        if "create" in tool.name.lower():
-            return tool
-    return tools[0] if tools else None
