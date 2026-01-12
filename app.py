@@ -266,7 +266,6 @@ if st.button("🚀 Generate Learning Package", type="primary", use_container_wid
                     final_state.update(node_output)
         
         # Debug: Print final google_doc_links
-        print(f"[DEBUG] Final google_doc_links: {final_state.get('google_doc_links', {}) if final_state else 'None'}")
         
         # Display results
         st.markdown("---")
@@ -339,4 +338,4 @@ with col2:
     - Provides detailed solutions
     """)
 
-st.caption("Built with LangChain, LangGraph, and LangSmith | [View on GitHub](#)")
+st.caption("Built with LangChain, LangGraph, and LangSmith | [View on GitHub](https://github.com/Sim-Security/ai-teaching-agent-team)")
